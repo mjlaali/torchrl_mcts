@@ -1,0 +1,3 @@
+torchrl==0.3.0
+pytest==8.0.0
+gymnasium~=0.29.1
