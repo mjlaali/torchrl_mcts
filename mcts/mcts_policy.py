@@ -13,21 +13,38 @@ from torchrl.objectives.value import ValueEstimatorBase
 from mcts.tensordict_map import TensorDictMap
 
 
-class RolloutPolicy(ABC):
+class ExpansionStrategy(ABC):
+    """
+    The rollout policy in expanding tree.
+    This policy will use to initialize a node when it gets expanded at the first time.
+    """
+
     @abstractmethod
     def __call__(self, tensordict: TensorDictBase) -> TensorDictBase:
+        """
+        The node to be expanded. The output Tensordict will be used in future
+        to select action.
+        Args:
+            tensordict: The state that need to be explored
+
+        Returns:
+            A initialized statistics to select actions in the future.
+        """
         pass
 
 
 @dataclass
-class PureMctsRolloutPolicy(RolloutPolicy):
+class ZeroExpansion(ExpansionStrategy):
+    """
+    A rollout policy to initialize a state with zero Q(s, a).
+    """
+
     action_spec: TensorSpec
 
     def __call__(self, tensordict: TensorDictBase) -> TensorDict:
         node = TensorDict(
             {
                 "q_sa": torch.zeros((self.action_spec.shape[-1],), dtype=torch.float32),
-                "p_sa": torch.zeros((self.action_spec.shape[-1],), dtype=torch.float32),
                 "n_sa": torch.zeros((self.action_spec.shape[-1],), dtype=torch.long),
             },
             batch_size=tensordict.batch_size,
@@ -35,22 +52,45 @@ class PureMctsRolloutPolicy(RolloutPolicy):
         return node
 
 
-class AlphaZeroRolloutPolicy(RolloutPolicy):
+class AlphaZeroExpansionStrategy(ExpansionStrategy):
+    """
+    An implementation of Alpha Zero to initialize a node at its first time.
+
+    Args:
+            value_module: a TensorDictModule to initialize a prior for Q(s, a)
+            action_value_key: a key in the output of value_module that contains Q(s, a) values
+    """
+
     value_module: TensorDictModule
+
     action_value_key: str = "action_value"
 
     def __call__(self, tensordict: TensorDictBase) -> TensorDict:
         module_output = self.value_module(tensordict)
-        q_sa = module_output[self.action_value_key]
+        p_sa = module_output[self.action_value_key]
 
         node = TensorDict(
-            {q_sa: "q_sa", "p_sa": torch.clone(q_sa), "n_sa": torch.zeros_like(q_sa)},
+            {"q_sa": torch.clone(p_sa), "p_sa": p_sa, "n_sa": torch.zeros_like(p_sa)},
             batch_size=tensordict.batch_size,
         )
         return node
 
 
 def ucb_1(node: TensorDictBase) -> torch.Tensor:
+    """
+    An implementation of UCB estimation.
+    See Section 2.6 Upper-Confidence-Bound Action Selection on
+    Sutton, Richard S., and Andrew G. Barto. 2018. “Reinforcement Learning: An Introduction (Second Edition).”
+    http://incompleteideas.net/book/RLbook2020.pdf
+    Args:
+        node: A tensordict with keys of
+            q_sa representing the mean of Q(s, a) for every action `a` at state `s`.
+            n_sa representing the number of times action `a` is selected at state `s`.
+
+    Returns:
+        The optimism under uncertainty estimation computed by the UCB formula.
+    """
+
     x_hat = node["q_sa"]
     n_sa = node["n_sa"]
     mask = n_sa != 0
@@ -62,8 +102,17 @@ def ucb_1(node: TensorDictBase) -> torch.Tensor:
 
 def puct_agz(node: TensorDictBase, cpuct: float) -> torch.Tensor:
     """
-    puct formula copied from AlphaGoZero paper
+    puct formula copied from AlphaZero paper.
     https://discovery.ucl.ac.uk/id/eprint/10069050/1/alphazero_preprint.pdf
+
+    Args:
+        node: A tensordict with keys of
+            q_sa representing the mean of Q(s, a) for every action `a` at state `s`.
+            p_sa representing the prior of Q(s, a) for every action `a` at state `s`.
+            n_sa representing the number of times action `a` is selected at state `s`.
+
+    Returns:
+        The optimism under uncertainty estimation computed by the PUCB formula in AlphaZero paper
     """
     n_sa = node["n_sa"]
     p_sa = node["p_sa"]
@@ -77,7 +126,14 @@ def puct_agz(node: TensorDictBase, cpuct: float) -> torch.Tensor:
 
 
 @dataclass
-class TreePolicy:
+class ActionSelectionPolicy:
+    """
+    A policy to select an action in every node in the tree given nodes' stats.
+
+    Args:
+        exploration_strategy: a strategy to explore an action at a node.
+    """
+
     exploration_strategy: Callable
 
     def __call__(self, node: TensorDictBase) -> torch.Tensor:
@@ -101,18 +157,23 @@ class TreePolicy:
         return torch.nn.functional.one_hot(action, action_value.shape[-1])
 
 
-def visualize(tensordict: TensorDictBase):
-    return
-    print("\n\nboard:\n" + str(tensordict["observation"].reshape(-1, 12).numpy()))
-    if "action" in tensordict.keys():
-        print("\naction:\n" + str(tensordict["action"].numpy()))
-
-
 @dataclass
 class MctsPolicy:
+    """
+    An implementation of MCTS algorithm.
+
+    Args:
+        tree: a dict containing the stats of each state
+        tree_policy: a policy to select action in each state
+        rollout_policy: a policy to initialize stats of a node at its first visit.
+        value_estimator: a value estimator to update stats of node per each complete rollout
+        action_key: the action key of environment.
+
+    """
+
     tree: TensorDictMap
-    tree_policy: TreePolicy
-    rollout_policy: RolloutPolicy
+    tree_policy: ActionSelectionPolicy
+    rollout_policy: ExpansionStrategy
     value_estimator: ValueEstimatorBase
     action_key: str
 
@@ -128,7 +189,6 @@ class MctsPolicy:
         action = self.tree_policy(node)
 
         tensordict[self.action_key] = action
-        visualize(tensordict)
         return tensordict
 
     def start_simulation(self):
@@ -165,6 +225,18 @@ class MctsPolicy:
 
 @dataclass
 class SimulatedSearchPolicy:
+    """
+    A simulated search policy. In each step, it simulates `n` rollout of maximum steps of `max_steps`
+    using the given policy and then choose the best action given the simulation results.
+
+    Args:
+        policy: a policy to select action in each simulation rollout.
+        env: an environment to simulate a rollout
+        num_simulation: the number of simulation
+        max_steps: the max steps of each simulated rollout
+
+    """
+
     policy: MctsPolicy
     env: EnvBase
     num_simulation: int
@@ -182,7 +254,6 @@ class SimulatedSearchPolicy:
 
     def simulate(self, tensordict: TensorDictBase):
         tensordict = tensordict.clone(False)
-        visualize(tensordict)
         rollout = self.env.rollout(
             max_steps=self.max_steps,
             policy=self.policy,

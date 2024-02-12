@@ -5,8 +5,8 @@ from torchrl.objectives.value import TDLambdaEstimator
 
 from mcts.mcts_policy import (
     MctsPolicy,
-    TreePolicy,
-    PureMctsRolloutPolicy,
+    ActionSelectionPolicy,
+    ZeroExpansion,
     SimulatedSearchPolicy,
     ucb_1,
 )
@@ -16,7 +16,7 @@ from mcts.tensordict_map import TensorDictMap
 def test_explore_action_breaks_ties():
     torch.manual_seed(1)
 
-    policy = TreePolicy(exploration_strategy=ucb_1)
+    policy = ActionSelectionPolicy(exploration_strategy=ucb_1)
     zeros = torch.zeros((10,))
     node = TensorDict(
         {
@@ -37,12 +37,12 @@ def test_one_step():
 
     state = env.reset()
 
-    rollout_policy = PureMctsRolloutPolicy(action_spec=env.action_spec)
+    rollout_policy = ZeroExpansion(action_spec=env.action_spec)
     value_estimator = TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None)
 
     mcts_policy = MctsPolicy(
         tree=TensorDictMap("observation"),
-        tree_policy=TreePolicy(exploration_strategy=ucb_1),
+        tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
         rollout_policy=rollout_policy,
         value_estimator=value_estimator,
         action_key=env.action_key,
@@ -56,12 +56,12 @@ def test_one_step():
 def test_rollout() -> None:
     env = GymEnv("CliffWalking-v0")
 
-    rollout_policy = PureMctsRolloutPolicy(action_spec=env.action_spec)
+    rollout_policy = ZeroExpansion(action_spec=env.action_spec)
     value_estimator = TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None)
 
     mcts_policy = MctsPolicy(
         tree=TensorDictMap("observation"),
-        tree_policy=TreePolicy(exploration_strategy=ucb_1),
+        tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
         rollout_policy=rollout_policy,
         value_estimator=value_estimator,
         action_key=env.action_key,
@@ -78,8 +78,8 @@ def test_simulated_search_policy():
     policy = SimulatedSearchPolicy(
         policy=MctsPolicy(
             tree=TensorDictMap("observation"),
-            tree_policy=TreePolicy(exploration_strategy=ucb_1),
-            rollout_policy=PureMctsRolloutPolicy(env.action_spec),
+            tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
+            rollout_policy=ZeroExpansion(env.action_spec),
             value_estimator=TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None),
             action_key=env.action_key,
         ),
