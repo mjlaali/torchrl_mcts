@@ -1,14 +1,14 @@
 import torch
-from tensordict import TensorDict, TensorDictBase
-from torchrl.envs import GymEnv, TransformedEnv, Compose, DTypeCastTransform, Transform
-from torchrl.objectives.value import TDLambdaEstimator
+from tensordict import TensorDict
+from torchrl.envs import GymEnv
 
 from mcts.mcts_policy import (
     MctsPolicy,
-    ActionSelectionPolicy,
     ZeroExpansion,
     SimulatedSearchPolicy,
-    ucb_1,
+    UcbSelectionPolicy,
+    ActionExplorationModule,
+    UpdateTreeStrategy,
 )
 from mcts.tensordict_map import TensorDictMap
 
@@ -16,18 +16,21 @@ from mcts.tensordict_map import TensorDictMap
 def test_explore_action_breaks_ties():
     torch.manual_seed(1)
 
-    policy = ActionSelectionPolicy(exploration_strategy=ucb_1)
-    zeros = torch.zeros((10,))
+    n = 10
+    policy = ActionExplorationModule()
+    zeros = torch.zeros((n,))
     node = TensorDict(
         {
-            "q_sa": zeros.to(torch.float32),
-            "p_sa": zeros.to(torch.float32),
-            "n_sa": zeros,
+            "action_value": zeros.to(torch.float32),
         },
         batch_size=(),
     )
-    first_action = torch.argmax(policy.explore_action(node), dim=-1).item()
-    second_action = torch.argmax(policy.explore_action(node), dim=-1).item()
+
+    action_value = policy.explore_action(node)
+    first_action = torch.argmax(action_value, dim=-1).item()
+
+    action_value = policy.explore_action(node)
+    second_action = torch.argmax(action_value, dim=-1).item()
 
     assert first_action != second_action
 
@@ -37,15 +40,12 @@ def test_one_step():
 
     state = env.reset()
 
-    rollout_policy = ZeroExpansion(action_spec=env.action_spec)
-    value_estimator = TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None)
+    rollout_policy = ZeroExpansion(
+        tree=TensorDictMap("observation"), action_spec=env.action_spec
+    )
 
     mcts_policy = MctsPolicy(
-        tree=TensorDictMap("observation"),
-        tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
-        rollout_policy=rollout_policy,
-        value_estimator=value_estimator,
-        action_key=env.action_key,
+        expansion_strategy=rollout_policy,
     )
 
     state_action = mcts_policy(state)
@@ -56,33 +56,28 @@ def test_one_step():
 def test_rollout() -> None:
     env = GymEnv("CliffWalking-v0")
 
-    rollout_policy = ZeroExpansion(action_spec=env.action_spec)
-    value_estimator = TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None)
+    rollout_policy = ZeroExpansion(
+        tree=TensorDictMap("observation"), action_spec=env.action_spec
+    )
 
     mcts_policy = MctsPolicy(
-        tree=TensorDictMap("observation"),
-        tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
-        rollout_policy=rollout_policy,
-        value_estimator=value_estimator,
-        action_key=env.action_key,
+        expansion_strategy=rollout_policy,
     )
 
     env.rollout(policy=mcts_policy, max_steps=2)
-    assert len(mcts_policy.tree) > 0
+    assert len(rollout_policy.tree) > 0
 
 
 def test_simulated_search_policy():
     torch.manual_seed(1)
     env = GymEnv("CliffWalking-v0")
 
+    tree = TensorDictMap("observation")
     policy = SimulatedSearchPolicy(
         policy=MctsPolicy(
-            tree=TensorDictMap("observation"),
-            tree_policy=ActionSelectionPolicy(exploration_strategy=ucb_1),
-            rollout_policy=ZeroExpansion(env.action_spec),
-            value_estimator=TDLambdaEstimator(gamma=1.0, lmbda=1.0, value_network=None),
-            action_key=env.action_key,
+            expansion_strategy=ZeroExpansion(tree=tree, action_spec=env.action_spec),
         ),
+        tree_updater=UpdateTreeStrategy(tree),
         env=env,
         num_simulation=10,
         max_steps=3,
@@ -95,23 +90,25 @@ def test_simulated_search_policy():
     assert torch.min(rollout[("next", "reward")]).item() == -1
 
 
-def test_ucb_1():
-    res = ucb_1(
+def test_ucb_selection():
+    ucb = UcbSelectionPolicy()
+
+    res = ucb(
         TensorDict(
             {"q_sa": torch.Tensor([0.5, 0.5]), "n_sa": torch.Tensor([1, 2])},
             batch_size=(),
         )
     )
 
-    idx = torch.argmax(res, dim=-1)
+    idx = torch.argmax(res["action_value"], dim=-1)
     assert idx.item() == 0
 
-    res = ucb_1(
+    res = ucb(
         TensorDict(
             {"q_sa": torch.Tensor([0.6, 0.5]), "n_sa": torch.Tensor([1, 1])},
             batch_size=(),
         )
     )
 
-    idx = torch.argmax(res, dim=-1)
+    idx = torch.argmax(res["action_value"], dim=-1)
     assert idx.item() == 0
