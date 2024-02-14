@@ -75,6 +75,7 @@ class UpdateTreeStrategy:
                 node[q_sa_key] * node[n_sa_key] + target_value[idx, ...] * action
             )[mask] / (node[n_sa_key] + action)[mask]
             node[n_sa_key] += action
+            tree[state] = node
 
     def start_simulation(self):
         self.tree.clear()
@@ -113,7 +114,7 @@ class ExpansionStrategy(TensorDictModuleBase):
             self.tree[tensordict] = node
             return node
 
-        return self.expand(node)
+        return node
 
     @abstractmethod
     def expand(self, tensordict: TensorDictBase) -> TensorDictBase:
@@ -172,6 +173,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
             in_keys=value_module.in_keys,
         )
         assert action_value_key in value_module.out_keys
+        self.value_module = value_module
         self.action_value_key = action_value_key
         self.q_sa_key = q_sa_key
         self.p_sa_key = p_sa_key
@@ -203,7 +205,7 @@ class PucbSelectionPolicy(TensorDictModuleBase):
 
     def __init__(
         self,
-        cpuct: float = 2.0,
+        cpuct: float = 0.5,
         action_value_key: str = "action_value",
         q_sa_key: str = "q_sa",
         p_sa_key: str = "p_sa",
