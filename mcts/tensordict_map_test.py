@@ -9,7 +9,7 @@ def test_td_dict():
         {"key": torch.Tensor([1, 2]), "dummy": torch.Tensor([2, 3])}, batch_size=()
     )
 
-    td_dict = TensorDictMap("key")
+    td_dict = TensorDictMap(["key"])
     td_dict[td] = TensorDict({"value": torch.Tensor([True])}, batch_size=())
 
     td = TensorDict(
