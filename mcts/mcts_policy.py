@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
-from tensordict import TensorDictBase, TensorDict
+from tensordict import TensorDictBase, TensorDict, NestedKey
 from tensordict.nn import TensorDictModule, TensorDictModuleBase, TensorDictSequential
 from torchrl.data import TensorSpec
 from torchrl.envs import EnvBase
@@ -34,9 +34,9 @@ class UpdateTreeStrategy:
         value_estimator: ValueEstimatorBase = TDLambdaEstimator(
             gamma=1.0, lmbda=1.0, value_network=None
         ),
-        action_key: str = "action",
-        q_sa_key: str = "q_sa",
-        n_sa_key: str = "n_sa",
+        action_key: NestedKey = "action",
+        q_sa_key: NestedKey = "q_sa",
+        n_sa_key: NestedKey = "n_sa",
     ):
         self.tree = tree
         self.action_key = action_key
@@ -49,10 +49,11 @@ class UpdateTreeStrategy:
         n_sa_key = self.n_sa_key
         q_sa_key = self.q_sa_key
 
+        steps = rollout.unbind(-1)
         next_state_value = torch.stack(
             [
                 torch.sum(
-                    rollout[i][self.action_key] * tree[rollout[i]][q_sa_key],
+                    steps[i][self.action_key] * tree[steps[i]][q_sa_key],
                     dim=0,
                     keepdim=True,
                 )
@@ -66,13 +67,16 @@ class UpdateTreeStrategy:
         target_value = self.value_estimator.value_estimate(value_estimator_input)
         target_value = target_value.squeeze(dim=0)
 
-        for idx in range(rollout.batch_size[0]):
-            state = rollout[idx, ...]
+        # usually time is along the last dimension (if envs are batched for instance)
+        steps = rollout.unbind(-1)
+        target_values = target_value.unbind(rollout.ndim-1)
+        for idx in range(rollout.batch_size[-1]):
+            state = steps[idx]
             node = tree[state]
             action = state[self.action_key]
             mask = (node[n_sa_key] + action) > 0
             node[q_sa_key][mask] = (
-                node[q_sa_key] * node[n_sa_key] + target_value[idx, ...] * action
+                node[q_sa_key] * node[n_sa_key] + target_values[idx] * action
             )[mask] / (node[n_sa_key] + action)[mask]
             node[n_sa_key] += action
             tree[state] = node
@@ -130,8 +134,8 @@ class ZeroExpansion(ExpansionStrategy):
         self,
         tree: TensorDictMap,
         action_spec: TensorSpec,
-        q_sa_key: str = "q_sa",
-        n_sa_key: str = "n_sa",
+        q_sa_key: NestedKey = "q_sa",
+        n_sa_key: NestedKey = "n_sa",
     ):
         super().__init__(tree=tree, out_keys=[q_sa_key, n_sa_key])
         self.action_spec = action_spec
@@ -162,10 +166,10 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         self,
         tree: TensorDictMap,
         value_module: TensorDictModule,
-        q_sa_key: str = "q_sa",
-        p_sa_key: str = "p_sa",
-        n_sa_key: str = "n_sa",
-        action_value_key: str = "action_value",
+        q_sa_key: NestedKey = "q_sa",
+        p_sa_key: NestedKey = "p_sa",
+        n_sa_key: NestedKey = "n_sa",
+        action_value_key: NestedKey = "action_value",
     ):
         super().__init__(
             tree=tree,
@@ -206,10 +210,10 @@ class PucbSelectionPolicy(TensorDictModuleBase):
     def __init__(
         self,
         cpuct: float = 0.5,
-        action_value_key: str = "action_value",
-        q_sa_key: str = "q_sa",
-        p_sa_key: str = "p_sa",
-        n_sa_key: str = "n_sa",
+        action_value_key: NestedKey = "action_value",
+        q_sa_key: NestedKey = "q_sa",
+        p_sa_key: NestedKey = "p_sa",
+        n_sa_key: NestedKey = "n_sa",
     ):
         self.in_keys = [q_sa_key, n_sa_key, p_sa_key]
         self.out_keys = [action_value_key]
@@ -250,9 +254,9 @@ class UcbSelectionPolicy(TensorDictModuleBase):
     def __init__(
         self,
         cucb: float = 2.0,
-        action_value_key: str = "action_value",
-        q_sa_key: str = "q_sa",
-        n_sa_key: str = "n_sa",
+        action_value_key: NestedKey = "action_value",
+        q_sa_key: NestedKey = "q_sa",
+        n_sa_key: NestedKey = "n_sa",
     ):
         self.in_keys = [q_sa_key, n_sa_key]
         self.out_keys = [action_value_key]
@@ -279,9 +283,9 @@ class UcbSelectionPolicy(TensorDictModuleBase):
 class ActionExplorationModule(TensorDictModuleBase):
     def __init__(
         self,
-        action_cnt_key: str = "n_sa",
-        action_value_key: str = "action_value",
-        action_key: str = "action",
+        action_cnt_key: NestedKey = "n_sa",
+        action_value_key: NestedKey = "action_value",
+        action_key: NestedKey = "action",
     ):
         self.in_keys = [action_cnt_key, action_value_key]
         self.out_keys = [action_key]
