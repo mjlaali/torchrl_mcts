@@ -69,7 +69,7 @@ class UpdateTreeStrategy:
 
         # usually time is along the last dimension (if envs are batched for instance)
         steps = rollout.unbind(-1)
-        target_values = target_value.unbind(rollout.ndim-1)
+        target_values = target_value.unbind(rollout.ndim - 1)
         for idx in range(rollout.batch_size[-1]):
             state = steps[idx]
             node = tree[state]
@@ -97,7 +97,7 @@ class ExpansionStrategy(TensorDictModuleBase):
         out_keys: List[str],
         in_keys: Optional[List[str]] = None,
     ):
-        self.in_keys = list(set([tree.key] + [] if in_keys is None else in_keys))
+        self.in_keys = list(set(tree.keys + [] if in_keys is None else in_keys))
         self.out_keys = out_keys
         super().__init__()
         self.tree = tree
@@ -326,18 +326,16 @@ class MctsPolicy(TensorDictSequential):
     Args:
         expansion_strategy: a policy to initialize stats of a node at its first visit.
         selection_strategy: a policy to select action in each state
-        value_estimator: a value estimator to update stats of node per each complete rollout
-        action_key: the action key of environment.
-
+        exploration_strategy: a policy to exploration vs exploitation
     """
 
     def __init__(
         self,
         expansion_strategy: ExpansionStrategy,
         selection_strategy: TensorDictModuleBase = UcbSelectionPolicy(),
-        action_exploration: ActionExplorationModule = ActionExplorationModule(),
+        exploration_strategy: ActionExplorationModule = ActionExplorationModule(),
     ):
-        super().__init__(expansion_strategy, selection_strategy, action_exploration)
+        super().__init__(expansion_strategy, selection_strategy, exploration_strategy)
 
 
 @dataclass

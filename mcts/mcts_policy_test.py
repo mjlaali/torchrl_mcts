@@ -1,8 +1,10 @@
+import numpy as np
 import pytest
 import torch
-import numpy as np
 from tensordict import TensorDict
-from torchrl.envs import GymEnv
+from torchrl.envs import (
+    GymEnv,
+)
 from torchrl.modules import QValueActor, MLP
 
 from mcts.mcts_policy import (
@@ -122,7 +124,7 @@ def test_ucb_selection():
 def test_alpha_zero_expansion():
     value_module = QValueActor(
         MLP(in_features=5, out_features=7),
-        in_keys=["observation"],
+        in_keys="observation",
         action_space="one-hot",
     )
     alpha_zero_expansion = AlphaZeroExpansionStrategy(
