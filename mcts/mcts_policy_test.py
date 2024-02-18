@@ -1,3 +1,5 @@
+from typing import cast
+
 import numpy as np
 import pytest
 import torch
@@ -7,6 +9,7 @@ from torchrl.envs import (
 )
 from torchrl.modules import QValueActor, MLP
 
+from mcts.stateless_cliffwalking import StatelessCliffWalking
 from mcts.mcts_policy import (
     MctsPolicy,
     ZeroExpansion,
@@ -15,7 +18,8 @@ from mcts.mcts_policy import (
     ActionExplorationModule,
     UpdateTreeStrategy,
     AlphaZeroExpansionStrategy,
-    PucbSelectionPolicy,
+    PuctSelectionPolicy,
+    safe_weighted_avg,
 )
 from mcts.tensordict_map import TensorDictMap
 
@@ -28,7 +32,7 @@ def test_explore_action_breaks_ties():
     zeros = torch.zeros((n,))
     node = TensorDict(
         {
-            "action_value": zeros.to(torch.float32),
+            "action_value_under_uncertainty": zeros.to(torch.float32),
         },
         batch_size=(),
     )
@@ -43,16 +47,16 @@ def test_explore_action_breaks_ties():
 
 
 def test_one_step():
-    env = GymEnv("CliffWalking-v0")
+    env = StatelessCliffWalking()
 
     state = env.reset()
 
-    rollout_policy = ZeroExpansion(
-        tree=TensorDictMap("observation"), action_spec=env.action_spec
+    expansion_strategy = ZeroExpansion(
+        tree=TensorDictMap("observation"), num_action=env.action_spec.shape[-1]
     )
 
     mcts_policy = MctsPolicy(
-        expansion_strategy=rollout_policy,
+        expansion_strategy=expansion_strategy,
     )
 
     state_action = mcts_policy(state)
@@ -61,10 +65,10 @@ def test_one_step():
 
 
 def test_rollout() -> None:
-    env = GymEnv("CliffWalking-v0")
+    env = StatelessCliffWalking()
 
     rollout_policy = ZeroExpansion(
-        tree=TensorDictMap("observation"), action_spec=env.action_spec
+        tree=TensorDictMap("observation"), num_action=env.action_spec.shape[-1]
     )
 
     mcts_policy = MctsPolicy(
@@ -76,24 +80,31 @@ def test_rollout() -> None:
 
 
 def test_simulated_search_policy():
+    # TODO: This test fails because the action value of reset state is getting changed between simulation 1 and
+    #   simulation 2, the general hypothesis is that the tensor changed in the dict when we explore a new action in this
+    #   state in UcbSelectionPolicy
     torch.manual_seed(1)
-    env = GymEnv("CliffWalking-v0")
+    env = StatelessCliffWalking()
 
     tree = TensorDictMap("observation")
     policy = SimulatedSearchPolicy(
         policy=MctsPolicy(
-            expansion_strategy=ZeroExpansion(tree=tree, action_spec=env.action_spec),
+            expansion_strategy=ZeroExpansion(
+                tree=tree, num_action=env.action_spec.shape[-1]
+            ),
         ),
-        tree_updater=UpdateTreeStrategy(tree),
+        tree_updater=UpdateTreeStrategy(tree, num_action=env.action_spec.shape[-1]),
         env=env,
         num_simulation=10,
         max_steps=3,
     )
 
     rollout = env.rollout(
-        max_steps=30,
+        max_steps=16,
         policy=policy,
     )
+    for idx, v in enumerate(rollout[("next", "reward")].detach().numpy()):
+        print(f"{idx}: {v}")
     assert torch.min(rollout[("next", "reward")]).item() == -1
 
 
@@ -102,7 +113,10 @@ def test_ucb_selection():
 
     res = ucb(
         TensorDict(
-            {"q_sa": torch.Tensor([0.5, 0.5]), "n_sa": torch.Tensor([1, 2])},
+            {
+                "action_value": torch.Tensor([0.5, 0.5]),
+                "action_count": torch.Tensor([1, 2]),
+            },
             batch_size=(),
         )
     )
@@ -112,7 +126,10 @@ def test_ucb_selection():
 
     res = ucb(
         TensorDict(
-            {"q_sa": torch.Tensor([0.6, 0.5]), "n_sa": torch.Tensor([1, 1])},
+            {
+                "action_value": torch.Tensor([0.6, 0.5]),
+                "action_count": torch.Tensor([1, 1]),
+            },
             batch_size=(),
         )
     )
@@ -137,12 +154,13 @@ def test_alpha_zero_expansion():
     )
     tensordict = alpha_zero_expansion(tensordict)
 
-    assert "q_sa" in tensordict.keys()
-    assert "p_sa" in tensordict.keys()
-    assert "n_sa" in tensordict.keys()
+    assert "action_value" in tensordict.keys()
+    assert "prior_action_value" in tensordict.keys()
+    assert "action_count" in tensordict.keys()
 
     np.testing.assert_almost_equal(
-        tensordict["p_sa"].detach().numpy(), tensordict["action_value"].detach().numpy()
+        tensordict["prior_action_value"].detach().numpy(),
+        tensordict["action_value"].detach().numpy(),
     )
 
 
@@ -152,9 +170,9 @@ def test_alpha_zero_expansion():
         (
             TensorDict(
                 {
-                    "q_sa": torch.Tensor([0.1, 0.1]),
-                    "p_sa": torch.Tensor([0.1, 0.1]),
-                    "n_sa": torch.Tensor([1, 2]),
+                    "action_value": torch.Tensor([0.1, 0.1]),
+                    "prior_action_value": torch.Tensor([0.1, 0.1]),
+                    "action_count": torch.Tensor([1, 2]),
                 },
                 batch_size=(),
             ),
@@ -163,9 +181,9 @@ def test_alpha_zero_expansion():
         (
             TensorDict(
                 {
-                    "q_sa": torch.Tensor([0.1, 0.1]),
-                    "p_sa": torch.Tensor([0.2, 0.1]),
-                    "n_sa": torch.Tensor([1, 1]),
+                    "action_value": torch.Tensor([0.1, 0.1]),
+                    "prior_action_value": torch.Tensor([0.2, 0.1]),
+                    "action_count": torch.Tensor([1, 1]),
                 },
                 batch_size=(),
             ),
@@ -174,9 +192,9 @@ def test_alpha_zero_expansion():
         (
             TensorDict(
                 {
-                    "q_sa": torch.Tensor([0.1, 0.2]),
-                    "p_sa": torch.Tensor([0.1, 0.1]),
-                    "n_sa": torch.Tensor([1, 1]),
+                    "action_value": torch.Tensor([0.1, 0.2]),
+                    "prior_action_value": torch.Tensor([0.1, 0.1]),
+                    "action_count": torch.Tensor([1, 1]),
                 },
                 batch_size=(),
             ),
@@ -184,11 +202,108 @@ def test_alpha_zero_expansion():
         ),
     ],
 )
-def test_pucb_selection_policy(tensordict: TensorDict, expected_action: int):
-    pucb = PucbSelectionPolicy()
+def test_puct_selection_policy(tensordict: TensorDict, expected_action: int):
+    puct = PuctSelectionPolicy()
 
-    res = pucb(tensordict)
+    res = puct(tensordict)
 
     assert "action_value" in res.keys()
 
     assert torch.argmax(res["action_value"]).item() == expected_action
+
+
+def test_update_tree():
+    tree = TensorDictMap("observation")
+    tree_updater = UpdateTreeStrategy(tree=tree, num_action=2)
+
+    done_state = TensorDict(
+        {
+            "observation": torch.Tensor([1]),
+            "action_value": torch.Tensor([0.0, 0.0]),
+            "action": torch.Tensor([0, 1]),
+            "chosen_action_value": torch.Tensor([2.0]),
+            "action_count": torch.Tensor([0, 0]),
+            "next": {
+                "observation": torch.Tensor([2]),
+                "reward": torch.Tensor([1.0]),
+                "done": torch.Tensor([1]).to(torch.bool),
+            },
+        },
+        batch_size=(),
+    )
+
+    tree_updater.start_simulation()
+    tree[done_state] = done_state
+    tree_updater.update(done_state.unsqueeze(dim=0))
+
+    np.testing.assert_equal(tree[done_state]["action_count"].detach().numpy(), [0, 1])
+    np.testing.assert_equal(
+        tree[done_state]["action_value"].detach().numpy(), [0.0, 1.0]
+    )
+
+    init_state = TensorDict(
+        {
+            "observation": torch.Tensor([0]),
+            "action_value": torch.Tensor([0.0, 1.0]),
+            "action_count": torch.Tensor([1, 1]),
+            "action": torch.Tensor([1, 0]),
+            "next": {
+                "reward": torch.Tensor([2.0]),
+                "observation": done_state["observation"],
+                "done": torch.Tensor([0]).to(torch.bool),
+            },
+        },
+        batch_size=(),
+    )
+
+    # noinspection PyTypeChecker
+    rollout = cast(TensorDict, torch.stack((init_state, done_state), dim=0))
+    tree_updater.start_simulation()
+    tree[init_state] = init_state
+    tree[done_state] = done_state
+    tree_updater.update(rollout)
+
+    np.testing.assert_equal(tree[init_state]["action_count"].detach().numpy(), [2, 1])
+    total_reward = init_state[("next", "reward")] + done_state[("next", "reward")]
+    np.testing.assert_equal(
+        tree[init_state]["action_value"].detach().numpy(), [total_reward.item() / 2, 1]
+    )
+
+
+@pytest.mark.parametrize(
+    "w1,v1,w2,v2,expected_output",
+    [
+        (
+            torch.Tensor([0, 1]),
+            torch.Tensor([0, 2]),
+            torch.Tensor([0, 0]),
+            torch.Tensor([1, 2]),
+            torch.Tensor([0, 2]),
+        ),
+        (
+            torch.Tensor([0, 1]),
+            torch.Tensor([0, 2]),
+            torch.Tensor([1, 1]),
+            torch.Tensor([1, 1]),
+            torch.Tensor([1, 1.5]),
+        ),
+        (
+            torch.Tensor([0, 1]),
+            torch.Tensor([0, 2]),
+            torch.Tensor([0, 1]),
+            torch.Tensor([1]),
+            torch.Tensor([0, 1.5]),
+        ),
+    ],
+)
+def test_weighted_sum(
+    w1: torch.Tensor,
+    v1: torch.Tensor,
+    w2: torch.Tensor,
+    v2: torch.Tensor,
+    expected_output: torch.Tensor,
+):
+    avg = safe_weighted_avg(w1, v1, w2, v2)
+    np.testing.assert_almost_equal(
+        avg.detach().numpy(), expected_output.detach().numpy()
+    )

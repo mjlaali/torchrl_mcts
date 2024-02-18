@@ -1,5 +1,5 @@
 from collections.abc import MutableMapping
-from typing import TypeVar, Tuple, Union, List
+from typing import TypeVar, Union, List, Sequence
 
 from tensordict import TensorDictBase, NestedKey
 
@@ -9,7 +9,7 @@ T = TypeVar("T")
 class TensorDictMap(MutableMapping[TensorDictBase, TensorDictBase]):
     def __init__(
         self,
-        keys: Union[NestedKey, List[NestedKey]],
+        keys: Union[NestedKey, Sequence[NestedKey]],
     ):
         if isinstance(keys, List):
             self.keys = keys
