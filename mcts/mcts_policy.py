@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
-from tensordict import TensorDictBase, TensorDict, NestedKey
+from tensordict import TensorDictBase, TensorDict
+from tensordict.utils import NestedKey
 from tensordict.nn import TensorDictModule, TensorDictModuleBase, TensorDictSequential
 from torchrl.data import TensorSpec
 from torchrl.envs import EnvBase

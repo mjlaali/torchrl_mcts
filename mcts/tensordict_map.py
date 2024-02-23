@@ -1,7 +1,8 @@
 from collections.abc import MutableMapping
 from typing import TypeVar, Tuple, Union, List
 
-from tensordict import TensorDictBase, NestedKey
+from tensordict import TensorDictBase
+from tensordict.utils import NestedKey
 
 T = TypeVar("T")
 
