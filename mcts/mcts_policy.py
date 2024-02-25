@@ -44,12 +44,11 @@ class UpdateTreeStrategy:
         self.q_sa_key = q_sa_key
         self.n_sa_key = n_sa_key
         self.value_estimator = value_estimator
-
-    def update(self, rollout: TensorDictBase) -> None:
+    
+    def updated_next_state_value(self, rollout: TensorDictBase) -> TensorDictBase:
         tree = self.tree
         n_sa_key = self.n_sa_key
         q_sa_key = self.q_sa_key
-
         steps = rollout.unbind(-1)
         next_state_value = torch.stack(
             [
@@ -64,11 +63,20 @@ class UpdateTreeStrategy:
             dim=0,
         )
         rollout[("next", self.value_estimator.value_key)] = next_state_value
+        return rollout
+
+    def update(self, rollout: TensorDictBase) -> None:
+        tree = self.tree
+        n_sa_key = self.n_sa_key
+        q_sa_key = self.q_sa_key
+
+        rollout = self.updated_next_state_value(rollout)
         value_estimator_input = rollout.unsqueeze(dim=0)
         target_value = self.value_estimator.value_estimate(value_estimator_input)
         target_value = target_value.squeeze(dim=0)
 
         # usually time is along the last dimension (if envs are batched for instance)
+        
         steps = rollout.unbind(-1)
         target_values = target_value.unbind(rollout.ndim - 1)
         for idx in range(rollout.batch_size[-1]):
@@ -81,6 +89,9 @@ class UpdateTreeStrategy:
             )[mask] / (node[n_sa_key] + action)[mask]
             node[n_sa_key] += action
             tree[state] = node
+        
+        # return rollout so that we can train the alpha zero testing.
+        return rollout # we are returning this to avoid returning the again during the alphazero coding.
 
     def start_simulation(self):
         self.tree.clear()
@@ -370,12 +381,13 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
         self.env = env
         self.num_simulation = num_simulation
         self.max_steps = max_steps
+        self._rollout = [] # This is temporary, we will remove this later.
 
     def forward(self, tensordict: TensorDictBase):
         with torch.no_grad():
             self.tree_updater.start_simulation()
             for i in range(self.num_simulation):
-                self.simulate(tensordict)
+                self._rollout.append(self.simulate(tensordict))
 
             with set_exploration_type(ExplorationType.MODE):
                 tensordict = self.policy(tensordict)
@@ -389,4 +401,64 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
             tensordict=tensordict,
             auto_reset=False,
         )
+        return self.tree_updater.update(rollout)
+    
+@dataclass
+class SimulatedAlphaZeroSearchPolicy(TensorDictModuleBase):
+    """
+    A simulated search policy. In each step, it simulates `n` rollout of maximum steps of `max_steps`
+    using the given policy and then choose the best action given the simulation results.
+
+    Args:
+        policy: a policy to select action in each simulation rollout.
+        env: an environment to simulate a rollout
+        num_simulation: the number of simulation
+        max_steps: the max steps of each simulated rollout
+
+    """
+
+    def __init__(
+        self,
+        policy: MctsPolicy,
+        tree_updater: UpdateTreeStrategy,
+        env: EnvBase,
+        num_simulation: int,
+        max_steps: int,
+    ):
+        self.in_keys = policy.in_keys
+        self.out_keys = policy.out_keys
+
+        super().__init__()
+        self.policy = policy
+        self.tree_updater = tree_updater
+        self.env = env
+        self.num_simulation = num_simulation
+        self.max_steps = max_steps
+        self._store_rollout = [] # This is temporary, we will remove this later.
+        self.rollout = None
+
+    def forward(self, tensordict: TensorDictBase, ):
+        with torch.no_grad():
+            self.tree_updater.start_simulation()
+            self._store_rollout.clear()
+            for i in range(self.num_simulation):
+                self.simulate(tensordict)
+
+            with set_exploration_type(ExplorationType.MODE):
+                tensordict = self.policy(tensordict)
+            rollout = torch.cat(self._store_rollout, dim=-1)
+            self._store_rollout.clear()
+            self.rollout = rollout
+            return tensordict
+
+    def simulate(self, tensordict: TensorDictBase):
+        tensordict = tensordict.clone(False)
+        rollout = self.env.rollout(
+            max_steps=self.max_steps,
+            policy=self.policy,
+            tensordict=tensordict,
+            auto_reset=False,
+        )
         self.tree_updater.update(rollout)
+        self._store_rollout.append(rollout)
+        
