@@ -42,20 +42,23 @@ policy = SimulatedAlphaZeroSearchPolicy(
     ),
     tree_updater=UpdateTreeStrategy(tree),
     env=env,
-    num_simulation=10,
-    max_steps=100,
+    num_simulation=100,
+    max_steps=1000,
 )
 
-res = policy(env.reset())
-rollout = policy.rollout
+
+action_dict = policy(env.reset())
+rollout = policy.rollout # TODO: This need to be updated and compapatible with torchrl methods ( Trained and collector )
 optimizer = torch.optim.Adam(qvalue_module.parameters(), lr=1e-7)
 
 for i in range(10):
-    if i == 2:  # Change the learning rate after 2 iterations because the loss drops by x10.
+    if i  == 1:
+        # change the learning rate
         for param_group in optimizer.param_groups:
-            param_group['lr'] = 1e-3
-    optimizer.zero_grad()
+            param_group['lr'] = 1e-9 # update the learning rate because the loss is not decreasing.
 
+    # updated the qvalue module and the loss backpropagation
+    optimizer.zero_grad()
     losses_td = loss_module(rollout)
     loss_components = (item for key, item in losses_td.items() if key.startswith("loss"))
     loss = sum(loss_components)
@@ -67,7 +70,10 @@ for i in range(10):
     optimizer.step()
     print(f'Loss: {loss.item()}')
 
-    # Generate new rollout for the next iteration
-    res = env.rollout(max_steps=10, policy=policy)
-    print(policy.rollout.shape)
-    rollout = policy.rollout
+
+
+    # Next step prediction
+    next_state = env.step(action_dict)
+
+    # action for the next state
+    action_dict = policy(next_state)

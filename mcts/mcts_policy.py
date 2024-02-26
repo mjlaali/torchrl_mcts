@@ -13,6 +13,7 @@ from torchrl.objectives.value import ValueEstimatorBase, TDLambdaEstimator
 
 from mcts.tensordict_map import TensorDictMap
 
+from tqdm import tqdm
 
 class UpdateTreeStrategy:
     """
@@ -45,10 +46,16 @@ class UpdateTreeStrategy:
         self.n_sa_key = n_sa_key
         self.value_estimator = value_estimator
     
-    def updated_next_state_value(self, rollout: TensorDictBase) -> TensorDictBase:
+
+    def update(self, rollout: TensorDictBase) -> None:
         tree = self.tree
         n_sa_key = self.n_sa_key
         q_sa_key = self.q_sa_key
+
+ 
+
+        # usually time is along the last dimension (if envs are batched for instance)
+        
         steps = rollout.unbind(-1)
         next_state_value = torch.stack(
             [
@@ -63,21 +70,10 @@ class UpdateTreeStrategy:
             dim=0,
         )
         rollout[("next", self.value_estimator.value_key)] = next_state_value
-        return rollout
 
-    def update(self, rollout: TensorDictBase) -> None:
-        tree = self.tree
-        n_sa_key = self.n_sa_key
-        q_sa_key = self.q_sa_key
-
-        rollout = self.updated_next_state_value(rollout)
         value_estimator_input = rollout.unsqueeze(dim=0)
         target_value = self.value_estimator.value_estimate(value_estimator_input)
         target_value = target_value.squeeze(dim=0)
-
-        # usually time is along the last dimension (if envs are batched for instance)
-        
-        steps = rollout.unbind(-1)
         target_values = target_value.unbind(rollout.ndim - 1)
         for idx in range(rollout.batch_size[-1]):
             state = steps[idx]
@@ -441,7 +437,7 @@ class SimulatedAlphaZeroSearchPolicy(TensorDictModuleBase):
         with torch.no_grad():
             self.tree_updater.start_simulation()
             self._store_rollout.clear()
-            for i in range(self.num_simulation):
+            for i in tqdm(range(self.num_simulation)):
                 self.simulate(tensordict)
 
             with set_exploration_type(ExplorationType.MODE):
