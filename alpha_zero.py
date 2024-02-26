@@ -1,14 +1,9 @@
-
 import torch
-
-from tensordict.nn import TensorDictModule
-
 from torchrl.modules import QValueActor
-
 from torchrl.envs import GymEnv, TransformedEnv, Compose, DTypeCastTransform, StepCounter
-
 from torchrl.objectives import DQNLoss
-
+from mcts.tensordict_map import TensorDictMap
+from mcts.mcts_policy import MctsPolicy, UpdateTreeStrategy, AlphaZeroExpansionStrategy, PucbSelectionPolicy, SimulatedAlphaZeroSearchPolicy
 
 
 def make_q_value(num_observation, num_action, action_space):
@@ -29,12 +24,7 @@ qvalue_module(env.reset())
 
 loss_module = DQNLoss(qvalue_module, action_space=env.action_spec)
 
-from mcts.tensordict_map import TensorDictMap
-from mcts.mcts_policy import SimulatedSearchPolicy, MctsPolicy, UpdateTreeStrategy, AlphaZeroExpansionStrategy, PucbSelectionPolicy, SimulatedAlphaZeroSearchPolicy
-
 tree = TensorDictMap(["observation", "step_count"])
-
-
 policy = SimulatedAlphaZeroSearchPolicy(
     policy=MctsPolicy(
         expansion_strategy=AlphaZeroExpansionStrategy(value_module=qvalue_module, tree=tree),
@@ -45,12 +35,11 @@ policy = SimulatedAlphaZeroSearchPolicy(
     num_simulation=100,
     max_steps=1000,
 )
-
-
 action_dict = policy(env.reset())
 rollout = policy.rollout # TODO: This need to be updated and compapatible with torchrl methods ( Trained and collector )
 optimizer = torch.optim.Adam(qvalue_module.parameters(), lr=1e-7)
 
+# TODO: This needs to be in the trainer class torchrl.Trainer
 for i in range(10):
     if i  == 1:
         # change the learning rate
