@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Iterable
 
 import torch
 from tensordict import TensorDictBase, TensorDict, NestedKey
@@ -44,16 +44,29 @@ class MaxActionValue(TensorDictModuleBase):
         self.action_value_key = action_value_key
 
     def forward(self, tensordict: TensorDict):
-        node = self.tree.get(tensordict)
+        if len(tensordict.batch_size) != 2:
+            raise ValueError(
+                f"Input tensordict expected to have a shape of batch x time_step but got {tensordict.batch_size}"
+            )
+        if tensordict.batch_size[0] != 1:
+            raise ValueError(
+                f"Current implementation only support batch size of 1 but got {tensordict.batch_size[0]}"
+            )
+        state_values = []
+        for step in tensordict.unbind(dim=1):
+            node = self.tree.get(step)
 
-        if node is None:
-            state_value = torch.zeros(tensordict.batch_size + (1,))
-        else:
-            state_value = torch.max(node[self.action_value_key], dim=-1, keepdim=True)[
-                0
-            ]
+            if node is None:
+                state_value = torch.zeros((1,))
+            else:
+                state_value = torch.max(
+                    node[self.action_value_key], dim=-1, keepdim=True
+                )[0]
+            state_values.append(state_value)
 
-        tensordict[self.state_value_key] = state_value
+        tensordict[self.state_value_key] = torch.stack(state_values, dim=0).unsqueeze(
+            dim=0
+        )
 
 
 class UpdateTreeStrategy:
@@ -102,7 +115,7 @@ class UpdateTreeStrategy:
         tree = self.tree
         action_count_key = self.action_count_key
         action_value_key = self.action_value_key
-
+        r = torch.max(rollout[("next", "reward")]).item()
         # usually time is along the last dimension (if envs are batched for instance)
         steps = rollout.unbind(-1)
 
@@ -289,6 +302,7 @@ class PuctSelectionPolicy(TensorDictModuleBase):
 
         optimism_estimation = x_hat + u_sa
         tensordict[self.action_value_under_uncertainty_key] = optimism_estimation
+
         return tensordict
 
 
@@ -357,6 +371,7 @@ class ActionExplorationModule(TensorDictModuleBase):
             tensordict[self.action_key] = self.explore_action(tensordict)
         elif exploration_type() == ExplorationType.MODE:
             tensordict[self.action_key] = self.get_greedy_action(tensordict)
+
         return tensordict
 
     def get_greedy_action(self, node: TensorDictBase) -> torch.Tensor:
