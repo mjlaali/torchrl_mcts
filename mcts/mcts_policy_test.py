@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 import torch
 from tensordict import TensorDict
+from tensordict.nn import TensorDictModule
 from torchrl.modules import QValueActor, MLP
 
 from mcts.mcts_policy import (
     MctsPolicy,
-    ConstantValueExpansion,
     SimulatedSearchPolicy,
     UcbSelectionPolicy,
     ActionExplorationModule,
@@ -18,6 +18,7 @@ from mcts.mcts_policy import (
     safe_weighted_avg,
 )
 from mcts.stateless_cliffwalking import StatelessCliffWalking
+from mcts.stateless_frozenlake import StatelessFrozenLake
 from mcts.tensordict_map import TensorDictMap
 
 
@@ -48,8 +49,13 @@ def test_one_step():
 
     state = env.reset()
 
-    expansion_strategy = ConstantValueExpansion(
-        tree=TensorDictMap("observation"), num_action=env.action_spec.shape[-1]
+    expansion_strategy = AlphaZeroExpansionStrategy(
+        tree=TensorDictMap("observation"),
+        value_module=TensorDictModule(
+            module=lambda x: torch.zeros(env.action_spec.shape),
+            in_keys=["observation"],
+            out_keys=["action_value"],
+        ),
     )
 
     mcts_policy = MctsPolicy(
@@ -64,8 +70,13 @@ def test_one_step():
 def test_rollout() -> None:
     env = StatelessCliffWalking()
 
-    rollout_policy = ConstantValueExpansion(
-        tree=TensorDictMap("observation"), num_action=env.action_spec.shape[-1]
+    rollout_policy = AlphaZeroExpansionStrategy(
+        tree=TensorDictMap("observation"),
+        value_module=TensorDictModule(
+            module=lambda x: torch.zeros(env.action_spec.shape),
+            in_keys=["observation"],
+            out_keys=["action_value"],
+        ),
     )
 
     mcts_policy = MctsPolicy(
@@ -77,17 +88,19 @@ def test_rollout() -> None:
 
 
 def test_simulated_search_policy():
-    # TODO: This test fails because the action value of reset state is getting changed between simulation 1 and
-    #   simulation 2, the general hypothesis is that the tensor changed in the dict when we explore a new action in this
-    #   state in UcbSelectionPolicy
     torch.manual_seed(1)
     env = StatelessCliffWalking()
 
     tree = TensorDictMap("observation")
     policy = SimulatedSearchPolicy(
         policy=MctsPolicy(
-            expansion_strategy=ConstantValueExpansion(
-                tree=tree, num_action=env.action_spec.shape[-1]
+            expansion_strategy=AlphaZeroExpansionStrategy(
+                tree=tree,
+                value_module=TensorDictModule(
+                    module=lambda x: torch.zeros(env.action_spec.shape),
+                    in_keys=["observation"],
+                    out_keys=["action_value"],
+                ),
             ),
         ),
         tree_updater=UpdateTreeStrategy(tree),

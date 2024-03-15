@@ -183,37 +183,6 @@ class ExpansionStrategy(TensorDictModuleBase):
         pass
 
 
-class ConstantValueExpansion(ExpansionStrategy):
-    """
-    A rollout policy to initialize action values (Q(s, a)) with a constant values for all actions.
-    """
-
-    def __init__(
-        self,
-        tree: TensorDictMap,
-        num_action: int,
-        value: float = 0,
-        action_value_key: NestedKey = "action_value",
-        action_count_key: NestedKey = "action_count",
-    ):
-        super().__init__(tree=tree, out_keys=[action_value_key, action_count_key])
-        self.value = value
-        self.num_action = num_action
-        self.q_sa_key = action_value_key
-        self.n_sa_key = action_count_key
-
-    def expand(self, tensordict: TensorDictBase) -> TensorDict:
-        tensordict = tensordict.clone(False)
-        tensordict[self.q_sa_key] = (
-            torch.ones(tensordict.batch_size + (self.num_action,), dtype=torch.float32)
-            * self.value
-        )
-        tensordict[self.n_sa_key] = torch.zeros(
-            tensordict.batch_size + (self.num_action,), dtype=torch.long
-        )
-        return tensordict
-
-
 class AlphaZeroExpansionStrategy(ExpansionStrategy):
     """
     An implementation of Alpha Zero to initialize a node at its first time.
