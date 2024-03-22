@@ -17,7 +17,7 @@ from mcts.mcts_policy import (
     AlphaZeroExpansionStrategy,
     PuctSelectionPolicy,
 )
-from examples.stateless_frozenlake import StatelessFrozenLake
+from torchrl_env.stateless_frozenlake import StatelessFrozenLake
 from mcts.tensordict_map import TensorDictMap
 
 

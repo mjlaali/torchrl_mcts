@@ -116,7 +116,7 @@ class UpdateTreeStrategy:
         action_count_key = self.action_count_key
         action_value_key = self.action_value_key
         r = torch.max(rollout[("next", "reward")]).item()
-        # usually time is along the last dimension (if envs are batched for instance)
+        # usually time is along the last dimension (if torchrl_env are batched for instance)
         steps = rollout.unbind(-1)
 
         value_estimator_input = rollout.unsqueeze(dim=0)

@@ -17,7 +17,7 @@ from mcts.mcts_policy import (
     PuctSelectionPolicy,
     safe_weighted_avg,
 )
-from examples.stateless_cliffwalking import StatelessCliffWalking
+from torchrl_env.stateless_cliffwalking import StatelessCliffWalking
 from mcts.tensordict_map import TensorDictMap
 
 
