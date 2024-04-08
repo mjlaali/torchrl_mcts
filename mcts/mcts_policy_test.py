@@ -64,6 +64,13 @@ def test_one_step():
     state_action = mcts_policy(state)
 
     assert "action" in state_action.keys()
+    assert "explored" in state_action.keys()
+    # First step we always explore
+    assert state_action["explored"].item()
+
+    state = env.reset()
+    state_action = mcts_policy(state)
+    assert not state_action["explored"].item()
 
 
 def test_rollout() -> None:
