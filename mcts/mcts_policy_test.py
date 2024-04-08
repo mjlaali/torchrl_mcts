@@ -17,8 +17,7 @@ from mcts.mcts_policy import (
     PuctSelectionPolicy,
     safe_weighted_avg,
 )
-from mcts.stateless_cliffwalking import StatelessCliffWalking
-from mcts.stateless_frozenlake import StatelessFrozenLake
+from torchrl_env.stateless_cliffwalking import StatelessCliffWalking
 from mcts.tensordict_map import TensorDictMap
 
 
@@ -65,6 +64,13 @@ def test_one_step():
     state_action = mcts_policy(state)
 
     assert "action" in state_action.keys()
+    assert "explored" in state_action.keys()
+    # First step we always explore
+    assert state_action["explored"].item()
+
+    state = env.reset()
+    state_action = mcts_policy(state)
+    assert not state_action["explored"].item()
 
 
 def test_rollout() -> None:

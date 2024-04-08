@@ -115,8 +115,7 @@ class UpdateTreeStrategy:
         tree = self.tree
         action_count_key = self.action_count_key
         action_value_key = self.action_value_key
-        r = torch.max(rollout[("next", "reward")]).item()
-        # usually time is along the last dimension (if envs are batched for instance)
+        # usually time is along the last dimension (if torchrl_env are batched for instance)
         steps = rollout.unbind(-1)
 
         value_estimator_input = rollout.unsqueeze(dim=0)
@@ -153,12 +152,22 @@ class ExpansionStrategy(TensorDictModuleBase):
         self,
         tree: TensorDictMap,
         out_keys: List[str],
+        explored_flag_key: Optional[str],
         in_keys: Optional[List[str]] = None,
     ):
         self.in_keys = list(set(tree.keys + [] if in_keys is None else in_keys))
+        if explored_flag_key:
+            out_keys = out_keys + [explored_flag_key]
         self.out_keys = out_keys
         super().__init__()
         self.tree = tree
+        self.explore_flag_key = explored_flag_key
+
+    def maybe_add_flag(self, node: TensorDictBase, flag: bool) -> TensorDictBase:
+        if self.explore_flag_key:
+            node = node.clone(False)
+            node[self.explore_flag_key] = torch.ones(node.batch_size) * int(flag)
+        return node
 
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         """
@@ -174,8 +183,10 @@ class ExpansionStrategy(TensorDictModuleBase):
         if node is None:
             node = self.expand(tensordict)
             self.tree[tensordict] = node
+            node = self.maybe_add_flag(node, True)
             return node
 
+        node = self.maybe_add_flag(node, False)
         return node
 
     @abstractmethod
@@ -196,6 +207,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         self,
         tree: TensorDictMap,
         value_module: TensorDictModule,
+        explored_flag_key: NestedKey = "explored",
         action_value_key: NestedKey = "action_value",
         prior_action_value_key: NestedKey = "prior_action_value",
         action_count_key: NestedKey = "action_count",
@@ -205,6 +217,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
             tree=tree,
             out_keys=value_module.out_keys
             + [action_value_key, prior_action_value_key, action_count_key],
+            explored_flag_key=explored_flag_key,
             in_keys=value_module.in_keys,
         )
         assert module_action_value_key in value_module.out_keys

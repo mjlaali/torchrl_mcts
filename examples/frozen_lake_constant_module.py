@@ -17,11 +17,12 @@ from mcts.mcts_policy import (
     AlphaZeroExpansionStrategy,
     PuctSelectionPolicy,
 )
-from mcts.stateless_frozenlake import StatelessFrozenLake
+from mcts.transforms import TruncateTrajectory
+from torchrl_env.stateless_frozenlake import StatelessFrozenLake
 from mcts.tensordict_map import TensorDictMap
 
 
-def make_env() -> EnvBase:
+def make_env(truncate_key: str) -> EnvBase:
     return TransformedEnv(
         StatelessFrozenLake(render_mode="ansi", is_slippery=False),
         Compose(
@@ -29,18 +30,21 @@ def make_env() -> EnvBase:
                 dtype_in=torch.long, dtype_out=torch.float32, in_keys=["observation"]
             ),
             StepCounter(),
+            TruncateTrajectory(truncate_key),
         ),
     )
 
 
 def main():
     torch.manual_seed(1)
-    env = make_env()
+    truncate_key = "explored"
+    env = make_env(truncate_key)
     tree = TensorDictMap(["observation", "step_count"])
 
     mcts_policy = MctsPolicy(
         expansion_strategy=AlphaZeroExpansionStrategy(
             tree=tree,
+            explored_flag_key=truncate_key,
             value_module=TensorDictModule(
                 module=lambda x: torch.ones((4,)) * 1.0 / 4,
                 in_keys=["observation"],
