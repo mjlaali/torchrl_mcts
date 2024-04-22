@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Iterable
+from typing import List, Optional, Tuple
 
 import torch
 from tensordict import TensorDictBase, TensorDict, NestedKey
@@ -13,6 +13,42 @@ from torchrl.envs.utils import exploration_type, ExplorationType, set_exploratio
 from torchrl.objectives.value import ValueEstimatorBase, TDLambdaEstimator
 
 from mcts.tensordict_map import TensorDictMap
+from torchrl.record.loggers import Logger
+
+
+class SimulationListener:
+    def before_simulation(self):
+        pass
+
+    def start_simulation(self):
+        pass
+
+    def end_simulation(self, rollout: TensorDictBase):
+        pass
+
+    def after_simulation(self):
+        pass
+
+
+@dataclass
+class SimulationListeners(SimulationListener):
+    listeners: List[SimulationListener]
+
+    def before_simulation(self):
+        for listener in self.listeners:
+            listener.before_simulation()
+
+    def start_simulation(self):
+        for listener in self.listeners:
+            listener.start_simulation()
+
+    def end_simulation(self, rollout: TensorDictBase):
+        for listener in self.listeners:
+            listener.end_simulation(rollout)
+
+    def after_simulation(self):
+        for listener in self.listeners:
+            listener.after_simulation()
 
 
 def safe_weighted_avg(
@@ -69,7 +105,7 @@ class MaxActionValue(TensorDictModuleBase):
         )
 
 
-class UpdateTreeStrategy:
+class UpdateTreeStrategy(SimulationListener):
     """
     The strategy to update tree after each rollout. This class uses the given value estimator
     to compute a target value after each roll out and compute the mean of target values in the tree.
@@ -111,7 +147,7 @@ class UpdateTreeStrategy:
             vectorized=False,  # Todo: use True instead and fix the error
         )
 
-    def update(self, rollout: TensorDictBase) -> None:
+    def end_simulation(self, rollout: TensorDictBase) -> None:
         tree = self.tree
         action_count_key = self.action_count_key
         action_value_key = self.action_value_key
@@ -138,7 +174,7 @@ class UpdateTreeStrategy:
             node[action_count_key] += action
             tree[state] = node
 
-    def start_simulation(self):
+    def before_simulation(self):
         self.tree.clear()
 
 
@@ -415,6 +451,7 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
         env: EnvBase,
         num_simulation: int,
         max_steps: int,
+        listeners: Tuple[SimulationListener] = (),
     ):
         self.in_keys = policy.in_keys
         self.out_keys = policy.out_keys
@@ -425,19 +462,24 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
         self.env = env
         self.num_simulation = num_simulation
         self.max_steps = max_steps
+        self.listener = SimulationListeners(listeners=list(listeners) + [tree_updater])
+        self._parameters = policy._parameters
 
     def forward(self, tensordict: TensorDictBase):
         with torch.no_grad():
-            self.tree_updater.start_simulation()
+            self.listener.before_simulation()
 
             for i in range(self.num_simulation):
                 self.simulate(tensordict)
 
             with set_exploration_type(ExplorationType.MODE):
                 tensordict = self.policy(tensordict)
+
+            self.listener.after_simulation()
             return tensordict
 
     def simulate(self, tensordict: TensorDictBase):
+        self.listener.start_simulation()
         tensordict = tensordict.clone(False)
         rollout = self.env.rollout(
             max_steps=self.max_steps,
@@ -445,4 +487,4 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
             tensordict=tensordict,
             auto_reset=False,
         )
-        self.tree_updater.update(rollout)
+        self.listener.end_simulation(rollout)

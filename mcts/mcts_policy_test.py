@@ -250,7 +250,7 @@ def test_update_tree():
 
     tree_updater.start_simulation()
     tree[done_state] = done_state
-    tree_updater.update(done_state.unsqueeze(dim=0))
+    tree_updater.end_simulation(done_state.unsqueeze(dim=0))
 
     np.testing.assert_equal(tree[done_state]["action_count"].detach().numpy(), [0, 1])
     np.testing.assert_equal(
@@ -277,7 +277,7 @@ def test_update_tree():
     tree_updater.start_simulation()
     tree[init_state] = init_state
     tree[done_state] = done_state
-    tree_updater.update(rollout)
+    tree_updater.end_simulation(rollout)
 
     np.testing.assert_equal(tree[init_state]["action_count"].detach().numpy(), [2, 1])
     total_reward = init_state[("next", "reward")] + done_state[("next", "reward")]
