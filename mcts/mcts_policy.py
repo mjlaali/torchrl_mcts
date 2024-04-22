@@ -8,6 +8,7 @@ from tensordict.nn import TensorDictModule, TensorDictSequential
 
 # noinspection PyProtectedMember
 from tensordict.nn.common import TensorDictModuleBase
+from torch.distributions.dirichlet import _Dirichlet
 from torchrl.envs import EnvBase
 from torchrl.envs.utils import exploration_type, ExplorationType, set_exploration_type
 from torchrl.objectives.value import ValueEstimatorBase, TDLambdaEstimator
@@ -230,6 +231,39 @@ class ExpansionStrategy(TensorDictModuleBase):
         pass
 
 
+class DirichletNoiseModule(TensorDictModuleBase):
+    def __init__(
+        self,
+        alpha: float = 0.3,
+        epsilon: float = 0.25,
+        only_root: bool = False,
+        prior_action_value_key: str = "action_value",
+        is_root_key: str = "is_root",
+    ):
+        self.in_keys = [prior_action_value_key, is_root_key]
+        self.out_keys = [prior_action_value_key]
+        super().__init__()
+        self.alpha = alpha
+        self.epsilon = epsilon
+        self.only_root = only_root
+        self.prior_action_value_key = prior_action_value_key
+        self.is_root_key = is_root_key
+
+    def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
+        tensordict = tensordict.clone(False)
+        p_sa = tensordict[self.prior_action_value_key]
+        apply_noise = torch.logical_or(
+            tensordict[self.is_root_key],
+            torch.ones(tensordict.batch_size) * int(not self.only_root),
+        )
+        noise = _Dirichlet.apply(self.alpha * torch.ones_like(p_sa))
+        epsilon = self.epsilon * apply_noise
+        p_sa = (1 - epsilon) * p_sa + epsilon * noise
+
+        tensordict[self.prior_action_value_key] = p_sa
+        return tensordict
+
+
 class AlphaZeroExpansionStrategy(ExpansionStrategy):
     """
     An implementation of Alpha Zero to initialize a node at its first time.
@@ -243,6 +277,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         self,
         tree: TensorDictMap,
         value_module: TensorDictModule,
+        noise_module: DirichletNoiseModule = DirichletNoiseModule(),
         explored_flag_key: NestedKey = "explored",
         action_value_key: NestedKey = "action_value",
         prior_action_value_key: NestedKey = "prior_action_value",
@@ -258,6 +293,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         )
         assert module_action_value_key in value_module.out_keys
         self.value_module = value_module
+        self.noise_module = noise_module
         self.action_value_key = module_action_value_key
         self.q_sa_key = action_value_key
         self.p_sa_key = prior_action_value_key
@@ -265,7 +301,12 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
 
     def expand(self, tensordict: TensorDictBase) -> TensorDict:
         module_output = self.value_module(tensordict)
+        module_output[self.noise_module.is_root_key] = (
+            torch.ones(tensordict.batch_size) * len(self.tree) == 0
+        )
+        module_output = self.noise_module(module_output)
         p_sa = module_output[self.action_value_key]
+
         module_output[self.q_sa_key] = torch.clone(p_sa)
         module_output[self.p_sa_key] = p_sa
         module_output[self.n_sa_key] = torch.zeros_like(p_sa)
