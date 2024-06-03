@@ -13,6 +13,7 @@ This is a proof of concept on how MCTS can be implemented on top of TorchRL
    1. [Mastering the game of Go with deep neural networks and tree search](https://discovery.ucl.ac.uk/id/eprint/10045895/1/agz_unformatted_nature.pdf)
 8. AlphaZero Papers: 
    1. [A general reinforcement learning algorithm that masters chess, shogi and Go through self-play](https://discovery.ucl.ac.uk/id/eprint/10069050/1/alphazero_preprint.pdf)
+      1. [Supplementary Material](https://www.science.org/doi/10.1126/science.aar6404) ([pdf](https://www.science.org/doi/suppl/10.1126/science.aar6404/suppl_file/aar6404-silver-sm.pdf), [zip](https://www.science.org/doi/suppl/10.1126/science.aar6404/suppl_file/aar6404_datas1.zip))
    2. [Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm](https://arxiv.org/pdf/1712.01815.pdf)
 9. MuZero Papers: 
    1. [Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model](https://arxiv.org/pdf/1911.08265.pdf&lang=en)
