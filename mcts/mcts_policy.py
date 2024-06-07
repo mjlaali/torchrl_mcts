@@ -461,6 +461,7 @@ class ActionExplorationModule(TensorDictModuleBase):
     def __init__(
         self,
         action_value_key: NestedKey = "action_value",
+        action_cnt_key: NestedKey = "action_count",
         action_value_under_uncertainty_key: NestedKey = "action_value_under_uncertainty",
         action_key: NestedKey = "action",
     ):
@@ -468,7 +469,7 @@ class ActionExplorationModule(TensorDictModuleBase):
         self.out_keys = [action_key]
         super().__init__()
         self.action_value_key = action_value_under_uncertainty_key
-        self.action_cnt_key = action_value_key
+        self.action_cnt_key = action_cnt_key
         self.action_key = action_key
 
     def forward(self, tensordict: TensorDictBase):
