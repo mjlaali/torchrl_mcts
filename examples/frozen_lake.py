@@ -1,9 +1,11 @@
 import torch
-from torchrl.envs import GymEnv
+from torchrl.envs import GymEnv, step_mdp
+
+from torchrl_env.stateless_frozenlake import StatelessFrozenLake
 
 
 def main():
-    env = GymEnv("FrozenLake-v1", render_mode="ansi", is_slippery=False)
+    env = StatelessFrozenLake(render_mode="ansi", is_slippery=False)
 
     state = env.reset()
 
@@ -23,6 +25,8 @@ def main():
         state = env.step(state)
         for key in (("next", "reward"), ("next", "done")):
             print(f"{key}: {state[key].detach().numpy()}")
+
+        state = step_mdp(state)
 
 
 if __name__ == "__main__":

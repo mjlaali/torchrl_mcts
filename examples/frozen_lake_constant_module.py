@@ -35,6 +35,22 @@ def make_env(truncate_key: str) -> EnvBase:
     )
 
 
+def render(an_env: EnvBase, next_state: TensorDictBase) -> None:
+    print("\n------------")
+    for k in (
+        "action_value",
+        "action_count",
+        "action_value",
+        "action",
+        "done",
+        "step_count",
+    ):
+        if k in next_state.keys():
+            print(f"{k}:\n{next_state[k].detach().numpy()}")
+
+    print(an_env.render())
+
+
 def main():
     torch.manual_seed(1)
     truncate_key = "explored"
@@ -62,22 +78,6 @@ def main():
         num_simulation=2000,
         max_steps=100,
     )
-
-    def render(an_env: EnvBase, next_state: TensorDictBase) -> None:
-        print("\n------------")
-        for k in (
-            "action_value",
-            "action_count",
-            "action_value",
-            "action",
-            "done",
-            "step_count",
-        ):
-            if k in next_state.keys():
-                print(f"{k}:\n{next_state[k].detach().numpy()}")
-
-        print(an_env.render())
-
     env.reset()
     rollout = env.rollout(policy=policy, max_steps=20, callback=render)
     last_state = step_mdp(rollout[-1])

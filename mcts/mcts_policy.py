@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Iterable
+from typing import List, Optional, Tuple
 
 import torch
 from tensordict import TensorDictBase, TensorDict, NestedKey
@@ -8,11 +8,48 @@ from tensordict.nn import TensorDictModule, TensorDictSequential
 
 # noinspection PyProtectedMember
 from tensordict.nn.common import TensorDictModuleBase
+from torch.distributions.dirichlet import _Dirichlet
 from torchrl.envs import EnvBase
 from torchrl.envs.utils import exploration_type, ExplorationType, set_exploration_type
 from torchrl.objectives.value import ValueEstimatorBase, TDLambdaEstimator
+from torchrl.objectives.value.functional import td_lambda_return_estimate
 
 from mcts.tensordict_map import TensorDictMap
+
+
+class SimulationListener:
+    def before_simulation(self):
+        pass
+
+    def start_simulation(self):
+        pass
+
+    def end_simulation(self, rollout: TensorDictBase):
+        pass
+
+    def after_simulation(self):
+        pass
+
+
+@dataclass
+class SimulationListeners(SimulationListener):
+    listeners: List[SimulationListener]
+
+    def before_simulation(self):
+        for listener in self.listeners:
+            listener.before_simulation()
+
+    def start_simulation(self):
+        for listener in self.listeners:
+            listener.start_simulation()
+
+    def end_simulation(self, rollout: TensorDictBase):
+        for listener in self.listeners:
+            listener.end_simulation(rollout)
+
+    def after_simulation(self):
+        for listener in self.listeners:
+            listener.after_simulation()
 
 
 def safe_weighted_avg(
@@ -69,7 +106,39 @@ class MaxActionValue(TensorDictModuleBase):
         )
 
 
-class UpdateTreeStrategy:
+class MCEstimator(TensorDictModuleBase):
+    def __init__(
+        self,
+        reward_key: NestedKey = ("next", "reward"),
+        done_key: NestedKey = ("next", "done"),
+        target_value_key: NestedKey = "target_value",
+    ):
+        self.in_keys = [reward_key, done_key]
+        self.out_keys = [target_value_key]
+        super().__init__()
+
+        self.reward_key = reward_key
+        self.target_value_key = target_value_key
+        self.done_key = done_key
+
+    def forward(self, tensordict: TensorDict):
+        tensordict = tensordict.clone(False)
+        reward = tensordict[self.reward_key]
+        done = tensordict[self.done_key]
+        next_state_value = torch.zeros_like(reward)
+
+        target_value = td_lambda_return_estimate(
+            gamma=1.0,
+            lmbda=1.0,
+            next_state_value=next_state_value,
+            reward=reward,
+            done=done,
+        )
+        tensordict[self.target_value_key] = target_value
+        return tensordict
+
+
+class UpdateTreeStrategy(SimulationListener):
     """
     The strategy to update tree after each rollout. This class uses the given value estimator
     to compute a target value after each roll out and compute the mean of target values in the tree.
@@ -88,11 +157,12 @@ class UpdateTreeStrategy:
     def __init__(
         self,
         tree: TensorDictMap,
-        value_estimator: Optional[ValueEstimatorBase] = None,
+        value_estimator: Optional[TensorDictModuleBase] = None,
         action_key: NestedKey = "action",
         action_value_key: NestedKey = "action_value",
         action_count_key: NestedKey = "action_count",
         chosen_action_value_key: NestedKey = "chosen_action_value",
+        target_value_key: NestedKey = "target_value",
     ):
         self.tree = tree
         self.action_key = action_key
@@ -100,18 +170,20 @@ class UpdateTreeStrategy:
         self.action_count_key = action_count_key
         self.chosen_action_value = chosen_action_value_key
         self.value_estimator = value_estimator or self.get_default_value_network(tree)
+        self.target_value_key = target_value_key
 
     @staticmethod
-    def get_default_value_network(tree: TensorDictMap) -> ValueEstimatorBase:
+    def get_default_value_network(tree: TensorDictMap) -> TensorDictModuleBase:
         # noinspection PyTypeChecker
-        return TDLambdaEstimator(
-            gamma=1.0,
-            lmbda=1.0,
-            value_network=MaxActionValue(tree),
-            vectorized=False,  # Todo: use True instead and fix the error
-        )
+        return MCEstimator()
+        # return TDLambdaEstimator(
+        #     gamma=1.0,
+        #     lmbda=1.0,
+        #     value_network=MaxActionValue(tree),
+        #     vectorized=False,  # Todo: use True instead and fix the error
+        # )
 
-    def update(self, rollout: TensorDictBase) -> None:
+    def end_simulation(self, rollout: TensorDictBase) -> None:
         tree = self.tree
         action_count_key = self.action_count_key
         action_value_key = self.action_value_key
@@ -119,7 +191,9 @@ class UpdateTreeStrategy:
         steps = rollout.unbind(-1)
 
         value_estimator_input = rollout.unsqueeze(dim=0)
-        target_value = self.value_estimator.value_estimate(value_estimator_input)
+        target_value = self.value_estimator(value_estimator_input)[
+            self.target_value_key
+        ]
         target_value = target_value.squeeze(dim=0)
 
         target_values = target_value.unbind(rollout.ndim - 1)
@@ -138,7 +212,7 @@ class UpdateTreeStrategy:
             node[action_count_key] += action
             tree[state] = node
 
-    def start_simulation(self):
+    def before_simulation(self):
         self.tree.clear()
 
 
@@ -194,6 +268,39 @@ class ExpansionStrategy(TensorDictModuleBase):
         pass
 
 
+class DirichletNoiseModule(TensorDictModuleBase):
+    def __init__(
+        self,
+        alpha: float = 0.3,
+        epsilon: float = 0.3,
+        only_root: bool = True,
+        prior_action_value_key: str = "action_value",
+        is_root_key: str = "is_root",
+    ):
+        self.in_keys = [prior_action_value_key, is_root_key]
+        self.out_keys = [prior_action_value_key]
+        super().__init__()
+        self.alpha = alpha
+        self.epsilon = epsilon
+        self.only_root = only_root
+        self.prior_action_value_key = prior_action_value_key
+        self.is_root_key = is_root_key
+
+    def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
+        tensordict = tensordict.clone(False)
+        p_sa = tensordict[self.prior_action_value_key]
+        apply_noise = torch.logical_or(
+            tensordict[self.is_root_key],
+            torch.ones(tensordict.batch_size) * int(not self.only_root),
+        )
+        noise = _Dirichlet.apply(self.alpha * torch.ones_like(p_sa))
+        epsilon = self.epsilon * apply_noise
+        p_sa = (1 - epsilon) * p_sa + epsilon * noise
+
+        tensordict[self.prior_action_value_key] = p_sa
+        return tensordict
+
+
 class AlphaZeroExpansionStrategy(ExpansionStrategy):
     """
     An implementation of Alpha Zero to initialize a node at its first time.
@@ -207,6 +314,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         self,
         tree: TensorDictMap,
         value_module: TensorDictModule,
+        noise_module: DirichletNoiseModule = DirichletNoiseModule(),
         explored_flag_key: NestedKey = "explored",
         action_value_key: NestedKey = "action_value",
         prior_action_value_key: NestedKey = "prior_action_value",
@@ -222,6 +330,7 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
         )
         assert module_action_value_key in value_module.out_keys
         self.value_module = value_module
+        self.noise_module = noise_module
         self.action_value_key = module_action_value_key
         self.q_sa_key = action_value_key
         self.p_sa_key = prior_action_value_key
@@ -229,7 +338,12 @@ class AlphaZeroExpansionStrategy(ExpansionStrategy):
 
     def expand(self, tensordict: TensorDictBase) -> TensorDict:
         module_output = self.value_module(tensordict)
+        module_output[self.noise_module.is_root_key] = (
+            torch.ones(tensordict.batch_size) * len(self.tree) == 0
+        )
+        module_output = self.noise_module(module_output)
         p_sa = module_output[self.action_value_key]
+
         module_output[self.q_sa_key] = torch.clone(p_sa)
         module_output[self.p_sa_key] = p_sa
         module_output[self.n_sa_key] = torch.zeros_like(p_sa)
@@ -252,26 +366,30 @@ class PuctSelectionPolicy(TensorDictModuleBase):
 
     def __init__(
         self,
-        cpuct: float = 0.5,
-        action_value_under_uncertainty_key: NestedKey = "action_value_under_uncertainty",
+        pb_c_base: float = 10000,
+        pb_c_init: float = 1.25,
         action_value_key: NestedKey = "action_value",
         prior_action_value_key: NestedKey = "prior_action_value",
         action_count_key: NestedKey = "action_count",
+        normalized_count_key: NestedKey = "normalized_action_count",
+        action_value_under_uncertainty_key: NestedKey = "action_value_under_uncertainty",
     ):
         self.in_keys = [action_value_key, action_count_key, prior_action_value_key]
-        self.out_keys = [action_value_under_uncertainty_key]
+        self.out_keys = [action_value_under_uncertainty_key, normalized_count_key]
         super().__init__()
-        self.cpuct = cpuct
+        self.pb_c_base = pb_c_base
+        self.pb_c_init = pb_c_init
         self.action_value_key = action_value_key
         self.prior_action_value_key = prior_action_value_key
         self.action_count_key = action_count_key
         self.action_value_under_uncertainty_key = action_value_under_uncertainty_key
+        self.normalized_count_key = normalized_count_key
 
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         tensordict = tensordict.clone(False)
         n_sa = tensordict[self.action_count_key]
         p_sa = tensordict[self.prior_action_value_key]
-        x_hat = tensordict[self.action_value_key]
+        v_sa = tensordict[self.action_value_key]
 
         # we will always add 1, to avoid zero U values in the first visit of the node. See:
         # https://ai.stackexchange.com/questions/25451/how-does-alphazeros-mcts-work-when-starting-from-the-root-node
@@ -280,10 +398,16 @@ class PuctSelectionPolicy(TensorDictModuleBase):
         # is the right implementation. Also check this discussion:
         # https://groups.google.com/g/computer-go-archive/c/K9XHb64JSqU
         n = torch.sum(n_sa, dim=-1) + 1
-        u_sa = self.cpuct * p_sa * torch.sqrt(n) / (1 + n_sa)
+        u_sa = (
+            (torch.log(n + self.pb_c_base + 1) / self.pb_c_base + self.pb_c_init)
+            * torch.sqrt(n)
+            * p_sa
+            / (n_sa + 1)
+        )
 
-        optimism_estimation = x_hat + u_sa
+        optimism_estimation = u_sa + v_sa
         tensordict[self.action_value_under_uncertainty_key] = optimism_estimation
+        tensordict[self.normalized_count_key] = (n_sa / n).to(torch.float32)
 
         return tensordict
 
@@ -323,6 +447,7 @@ class UcbSelectionPolicy(TensorDictModuleBase):
         x_hat = node[self.action_value_key]
         n_sa = node[self.action_count_key]
         mask = n_sa != 0
+
         n = torch.sum(n_sa)
         optimism_estimation = x_hat.clone()
         optimism_estimation[mask] = x_hat[mask] + self.cucb * torch.sqrt(
@@ -336,6 +461,7 @@ class ActionExplorationModule(TensorDictModuleBase):
     def __init__(
         self,
         action_value_key: NestedKey = "action_value",
+        action_cnt_key: NestedKey = "action_count",
         action_value_under_uncertainty_key: NestedKey = "action_value_under_uncertainty",
         action_key: NestedKey = "action",
     ):
@@ -343,7 +469,7 @@ class ActionExplorationModule(TensorDictModuleBase):
         self.out_keys = [action_key]
         super().__init__()
         self.action_value_key = action_value_under_uncertainty_key
-        self.action_cnt_key = action_value_key
+        self.action_cnt_key = action_cnt_key
         self.action_key = action_key
 
     def forward(self, tensordict: TensorDictBase):
@@ -353,7 +479,7 @@ class ActionExplorationModule(TensorDictModuleBase):
             tensordict[self.action_key] = self.explore_action(tensordict)
         elif exploration_type() == ExplorationType.MODE:
             tensordict[self.action_key] = self.get_greedy_action(tensordict)
-
+        tensordict[self.action_key] = tensordict[self.action_key].to(torch.float32)
         return tensordict
 
     def get_greedy_action(self, node: TensorDictBase) -> torch.Tensor:
@@ -415,6 +541,7 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
         env: EnvBase,
         num_simulation: int,
         max_steps: int,
+        listeners: Tuple[SimulationListener] = (),
     ):
         self.in_keys = policy.in_keys
         self.out_keys = policy.out_keys
@@ -425,19 +552,24 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
         self.env = env
         self.num_simulation = num_simulation
         self.max_steps = max_steps
+        self.listener = SimulationListeners(listeners=list(listeners) + [tree_updater])
+        self._parameters = policy._parameters
 
     def forward(self, tensordict: TensorDictBase):
         with torch.no_grad():
-            self.tree_updater.start_simulation()
+            self.listener.before_simulation()
 
             for i in range(self.num_simulation):
                 self.simulate(tensordict)
 
             with set_exploration_type(ExplorationType.MODE):
                 tensordict = self.policy(tensordict)
+
+            self.listener.after_simulation()
             return tensordict
 
     def simulate(self, tensordict: TensorDictBase):
+        self.listener.start_simulation()
         tensordict = tensordict.clone(False)
         rollout = self.env.rollout(
             max_steps=self.max_steps,
@@ -445,4 +577,4 @@ class SimulatedSearchPolicy(TensorDictModuleBase):
             tensordict=tensordict,
             auto_reset=False,
         )
-        self.tree_updater.update(rollout)
+        self.listener.end_simulation(rollout)

@@ -86,12 +86,14 @@ class TruncateTrajectory(Transform):
             self.done_keys,
             self.terminated_keys,
         ):
-            truncated = tensordict.get(truncated_key, False).to(torch.bool)
+            truncated = tensordict.get(truncated_key, None)
+            if truncated is None:
+                continue
 
             done = next_tensordict.get(done_key, None)
             terminated = next_tensordict.get(terminated_key, None)
             if terminated is not None:
-                truncated = truncated & ~terminated
+                truncated = truncated.to(torch.bool) & ~terminated
             done = truncated | done  # we assume no done after reset
             next_tensordict.set(done_key, done)
             next_tensordict.set(truncated_key, truncated)
